@@ -1,3 +1,5 @@
+CFLAGS = -g
+
 all: qryp
 
 qryp: y.tab.o qryp.o

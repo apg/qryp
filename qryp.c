@@ -7,12 +7,26 @@
 #include "qryp.h"
 #include "y.tab.h"
 
+/* Field delimiter. Should be eventually customizable via flag */
+const char zzfielddelim = ' ';
+
+/* Line delimiter. */
+const char zzlinedelim = '\n';
+
+FILE *zzin;
+FILE *zzout;
+
 typedef struct bit {
   unsigned long key_beg; /* pointer to key in buffer */
+  unsigned long val_beg;
   size_t key_sz;
-  qnode_value_t valtype;
-  char *val; /* pointer to value in buffer */
   size_t val_sz;
+  qnode_value_t val_type;
+  union { /* cached values */
+    long fixnum;
+    double flonum;
+  };
+  /* TODO: flag for cache */
 } bit_t;
 
 typedef struct buffer {
@@ -26,11 +40,6 @@ typedef struct buffer {
  */
 struct cursor {
   buffer_t buffer;
-
-  /* Storage for position of delimiters such as spaces. */
-  unsigned long *delims;
-  unsigned long delims_i;
-  size_t delims_sz;
 
   /* Storage for key value pairs within */
   bit_t *bits;
@@ -90,13 +99,30 @@ buffer_append(buffer_t *buf, char c)
   buf->buf[buf->buf_i] = '\0';
 }
 
+/* Soft reset of cursor state. Keep the allocations, just reset pointers. */
+static void
+cursor_reset(struct cursor *cur)
+{
+  cur->buffer.buf_i = 0;
+  cur->bits_i = 0;
+}
+
+static void
+cursor_init(struct cursor *cur, size_t buf_sz)
+{
+  buffer_init(&(cur->buffer), buf_sz);
+  cursor_reset(cur);
+  cur->bits = NULL;
+  cur->bits_sz = 0;
+}
+
 /* Appends a bit to the cursor after parsing the current line */
 static void
 cursor_bitappend(struct cursor *cur, bit_t bit)
 {
   if ((cur->bits_i + 1) >= cur->bits_sz) {
     /* reallocate */
-    cur->bits_sz *= 2;
+    cur->bits_sz = (cur->bits_sz == 0) ? 32: cur->bits_sz * 2;
     cur->bits = realloc(cur->bits, cur->bits_sz * sizeof(*cur->bits));
     if (cur->bits == NULL) {
       fputs("ERROR: Out of memory. Aborting\n", stderr);
@@ -106,23 +132,6 @@ cursor_bitappend(struct cursor *cur, bit_t bit)
 
   cur->bits[cur->bits_i] = bit;
   cur->bits_i++;
-}
-
-static void
-cursor_delimappend(struct cursor *cur, unsigned long pos)
-{
-  if ((cur->delims_i + 1) >= cur->delims_sz) {
-    /* reallocate */
-    cur->delims_sz *= 2;
-    cur->delims = realloc(cur->delims, cur->delims_sz * sizeof(*cur->delims));
-    if (cur->delims == NULL) {
-      fputs("ERROR: Out of memory. Aborting\n", stderr);
-      exit(EXIT_FAILURE);
-    }
-  }
-
-  cur->delims[cur->delims_i] = pos;
-  cur->delims_i++;
 }
 
 
@@ -144,14 +153,6 @@ cursor_bitfind(struct cursor *cur, char *key, size_t key_sz)
   return -1;
 }
 
-/* Soft reset of cursor state. Keep the allocations, just reset pointers. */
-static void
-cursor_reset(struct cursor *cur)
-{
-  cur->buffer.buf_i = 0;
-  cur->delims_i = 0;
-  cur->bits_i = 0;
-}
 
 /**
  * Makes a zeroed qnode initialized to `type`
@@ -399,16 +400,8 @@ yylex()
     case '\n':
       lexstate.lineno++;
       lexstate.colno = 0;
-    case '0':
-    case '1':
-    case '2':
-    case '3':
-    case '4':
-    case '5':
-    case '6':
-    case '7':
-    case '8':
-    case '9':
+    case '0': case '1': case '2': case '3': case '4': case '5':
+    case '6': case '7': case '8': case '9':
       return lexnum(c);
 
     case 'a': case 'b': case 'c': case 'd': case 'e': case 'f':
@@ -422,10 +415,7 @@ yylex()
     case 'W': case 'X': case 'Y': case 'Z': case '_':
       return lexword(c);
 
-    case '=':
-    case '(':
-    case ')':
-    case '-':
+    case '=': case '(': case ')': case '-':
       return c;
     case '"':
       return lexstr(c);
@@ -495,27 +485,241 @@ yyerror(char *s)
 static void
 zznext(FILE *in)
 {
-  /* Read until a newline is found, parsing while doing so. */
+  /* Read until a zzlinedelim is found, parsing while doing so. */
   /* We'll then attempt to call qnode_match on it, and transform */
   /* the output as necessary */
 
-  /* Assume: zzlinedelim = '\n', zzdelim = ' ' */
+  int c = 0;
+  int i = -1; /* haven't gotten a character yet */
+  int curkeyval = 0; /* are we currently looking at a possible
+                        key value pair? */
+  int sawflo = 0;
+  int start = 0;
+  bit_t b;
 
+#define NEXT_CHAR() {c = fgetc(in); i++; buffer_append(&zzcur.buffer, c);}
+
+ dispatch:
+  NEXT_CHAR();
+  if (isdigit(c) || c == '-' || c == '+' || c == '.') {
+    b.val_beg = i;
+    if (!curkeyval) {
+      b.key_sz = 0;
+      b.key_beg = 0;
+    }
+
+#ifdef DEBUG
+    fprintf(stderr, "Heading off to numval\n");
+#endif
+
+    goto numval;
+  }
+  else if (c == '"') {
+    b.val_beg = i+1;
+#ifdef DEBUG
+    fprintf(stderr, "Heading off to qval\n");
+#endif
+    goto qval;
+  }
+  else if (isalpha(c) || c == '_') {
+    /* if we're in a key value pair and get a key */
+    if (!curkeyval) {
+      b.key_beg = i;
+      curkeyval = 1;
+    }
+    else {
+      b.val_beg = i;
+    }
+
+#ifdef DEBUG
+    fprintf(stderr, "Heading off to key\n");
+#endif
+    goto key;
+  }
+  else if (c == zzlinedelim) {
+    return;
+  }
+  else { /* extras right away */
+#ifdef DEBUG
+    fprintf(stderr, "Heading off to extras\n");
+#endif
+    b.val_type = QVALSTR; /* e.g. just junk */
+    b.val_beg = i; /* that starts here... */
+    b.key_beg = 0;
+    b.key_sz = 0;
+    curkeyval = 0;
+  }
+
+ extras:
+  for (;;) {
+    if (c == EOF || c == zzlinedelim || c == zzfielddelim) {
+      /* commit current bit. */
+      b.val_sz = i - b.val_beg;
+      cursor_bitappend(&zzcur, b);
+      if (c == zzfielddelim) {
+        goto dispatch;
+      }
+      return;
+    }
+    /* otherwise, just get the next character ... */
+    NEXT_CHAR();
+  }
+
+ key:
+  for (;;) {
+    if (c == EOF || c == zzlinedelim || c == zzfielddelim) {
+      /* If we get a delimiter, we must not have been at a key, since there
+         can't possibly be a cooresponding value
+
+         Unless we were in a keyval pair to begin with... Oddly.
+      */
+      b.val_beg = b.key_beg;
+      b.key_beg = 0;
+      b.key_sz = 0;
+      b.val_sz = i - b.val_beg;
+      b.val_type = QVALSTR;
+
+      cursor_bitappend(&zzcur, b);
+
+      if (c == zzfielddelim) {
+        curkeyval = 0;
+#ifdef DEBUG
+        fprintf(stderr, "Oops. Headed off to dispatch\n");
+#endif
+        goto dispatch;
+      }
+      return;
+    }
+    else if (c == '=') {
+      b.key_sz = i - b.key_beg;
+      curkeyval = 1;
+      goto dispatch;
+    }
+    else if (!(isalpha(c) || c == '#' || c == '.' || c == '_' || c == '-')) {
+      curkeyval = 0;
+      /* Then, it's not a key. Switch to value and jump to extras */
+      b.val_beg = b.key_beg;
+      b.key_beg = 0;
+      b.val_type = QVALSTR;
+      goto extras;
+    }
+
+    NEXT_CHAR();
+  }
+
+ numval:
+  for (;;) {
+    if (c == EOF || c == zzlinedelim || c == zzfielddelim) {
+      b.val_sz = i - b.val_beg;
+      if (sawflo) {
+        b.val_type = QVALFLO;
+        sawflo = 0;
+      }
+      else {
+        b.val_type = QVALFIX;
+      }
+      cursor_bitappend(&zzcur, b);
+
+      if (c == zzfielddelim) {
+        goto dispatch;
+      }
+      return;
+    }
+    else if (c == '.' && !sawflo) {
+      sawflo = 1;
+    }
+    else if (!(isdigit(c) || c == 'e' || c == 'E' || c == '+' || c == '-')) {
+      /* Then, it's not a number. Switch to value and jump to extras */
+      if (curkeyval) {
+        b.val_beg = b.key_beg;
+        b.key_beg = 0;
+        b.val_type = QVALSTR;
+      }
+      goto extras;
+    }
+
+    NEXT_CHAR();
+  }
+
+ qval:
+  for (;;) {
+    NEXT_CHAR();
+    if (c == EOF || c == zzlinedelim) {
+      b.val_sz = i - b.val_beg;
+      b.val_type = QVALSTR;
+      return;
+    }
+    else if (c == '\\') {
+      NEXT_CHAR();
+      if (c != '"') { /* ??? */
+        continue;
+      }
+    }
+    else if (c == '"') {
+      fprintf(stderr, "GOT A QUOTE. AWAY WITH YOU i=%d b.val_beg=%d.\n", i, b.val_beg);
+      b.val_sz = i - b.val_beg; /* don't include the quote */
+      b.val_type = QVALSTR;
+      cursor_bitappend(&zzcur, b);
+      goto dispatch;
+    }
+  }
 }
 
+void
+loop(qnode_t *qry)
+{
+  cursor_init(&(zzcur), 4096);
+  while (!feof(zzin)) {
+    cursor_reset(&zzcur);
+    zznext(zzin);
+
+    /* does zzcur match against the qry? */
+    if (qnode_match(qry, &zzcur)) {
+      fprintf(zzout, zzcur.buffer.buf);
+    }
+  }
+}
 
 int
 main(int argc, char **argv)
 {
-  printf("Parsing: '%s'\n", argv[1]);
+  int i;
+  /* printf("Parsing: '%s'\n", argv[1]); */
+
+  /* Initialize static lexstate */
   lexstate.lineno = 1;
   lexstate.peek = EOF;
   lexstate.colno = 0;
+
+  /* ASSUME argv[1] is a query */
   lexstate.buffer.buf = argv[1];
   lexstate.buffer.buf_i = 0;
   lexstate.buffer.buf_sz = strlen(argv[1]);
-  printf("Lexstate: buf=\"%s\" buf_i=%ld buf_sz=%ld\n", lexstate.buffer.buf,
-         lexstate.buffer.buf_i, lexstate.buffer.buf_sz);
+  /* printf("Lexstate: buf=\"%s\" buf_i=%ld buf_sz=%ld\n", lexstate.buffer.buf, */
+  /*        lexstate.buffer.buf_i, lexstate.buffer.buf_sz); */
+
+  /* get the first line. then, print the cursor. */
+
+  zzin = stdin;
+  zzout = stdout;
+
+  /* while (!feof(stdin)) { */
+  /*   cursor_init(&(zzcur), 4096); */
+  /*   zznext(zzin); */
+
+  /*   for (i = 0; i < zzcur.bits_i; i++) { */
+  /*     printf("BIT(%d): key_beg=%lu, key_sz=%lu, " */
+  /*            " val_beg=%lu, val_sz=%lu, " */
+  /*            " val_type=%d\n", i, */
+  /*            zzcur.bits[i].key_beg, */
+  /*            zzcur.bits[i].key_sz, */
+  /*            zzcur.bits[i].val_beg, */
+  /*            zzcur.bits[i].val_sz, */
+  /*            zzcur.bits[i].val_type); */
+  /*   } */
+  /* } */
+
+
   yyparse();
 
   return 0;

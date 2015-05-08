@@ -29,7 +29,7 @@
 
 top:
   query {
-    puts("success!\n");
+    loop($$);
   }
 
 query:
@@ -77,7 +77,8 @@ query2:
     $$ = $2;
   }
 
-keyval:
+keyval: /* TODO: refactor this into a single operator token.
+                 then dispatch on it's value */
   TWORD '=' TSTR {
     $$ = mkqnode(QKEY);
     $$->name = $1;
