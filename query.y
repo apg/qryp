@@ -8,6 +8,7 @@
 
 %union {
   qnode_t *node;
+  qnode_op_t op;
   long fix;
   double flo;
   char *str;
@@ -17,6 +18,7 @@
 %type <node> top query query1 query2 keyval
 %type <fix> fix
 %type <flo> flo
+%type <op> cmpop
 %token '=' '>' '<' '(' ')' '!' '-'
 %token TLE TGE TNE TAND TOR
 %token <fix> TFIX
@@ -77,207 +79,36 @@ query2:
     $$ = $2;
   }
 
-keyval: /* TODO: refactor this into a single operator token.
-                 then dispatch on it's value */
-  TWORD '=' TSTR {
+keyval:
+  TWORD cmpop TSTR {
     $$ = mkqnode(QKEY);
     $$->name = $1;
     $$->keytype = QKEYNAME;
-    $$->operator = QOPEQ;
+    $$->operator = $2;
     $$->valstr = $3;
     $$->value_type = QVALSTR;
   }
-| TWORD '=' TWORD {
+| TWORD cmpop TWORD {
     $$ = mkqnode(QKEY);
     $$->name = $1;
     $$->keytype = QKEYNAME;
-    $$->operator = QOPEQ;
+    $$->operator = $2;
     $$->valstr = $3;
     $$->value_type = QVALSTR;
   }
-| TWORD '=' TRXP {
-    $$ = mkqnode(QKEY);
-  }
-| TWORD '=' fix {
+| TWORD cmpop fix {
     $$ = mkqnode(QKEY);
     $$->name = $1;
     $$->keytype = QKEYNAME;
-    $$->operator = QOPEQ;
+    $$->operator = $2;
     $$->valfix = $3;
     $$->value_type = QVALFIX;
   }
-| TWORD '=' flo {
+| TWORD cmpop flo {
     $$ = mkqnode(QKEY);
     $$->name = $1;
     $$->keytype = QKEYNAME;
-    $$->operator = QOPEQ;
-    $$->valfix = $3;
-    $$->value_type = QVALFLO;
-  }
-| TWORD TNE TSTR {
-    $$ = mkqnode(QKEY);
-    $$->name = $1;
-    $$->keytype = QKEYNAME;
-    $$->operator = QOPNE;
-    $$->valstr = $3;
-    $$->value_type = QVALSTR;
-  }
-| TWORD TNE TWORD {
-    $$ = mkqnode(QKEY);
-    $$->name = $1;
-    $$->keytype = QKEYNAME;
-    $$->operator = QOPNE;
-    $$->valstr = $3;
-    $$->value_type = QVALSTR;
-  }
-| TWORD TNE TRXP {
-    $$ = mkqnode(QKEY);
-  }
-| TWORD TNE fix {
-    $$ = mkqnode(QKEY);
-    $$->name = $1;
-    $$->keytype = QKEYNAME;
-    $$->operator = QOPNE;
-    $$->valfix = $3;
-    $$->value_type = QVALFIX;
-  }
-| TWORD TNE flo {
-    $$ = mkqnode(QKEY);
-    $$->name = $1;
-    $$->keytype = QKEYNAME;
-    $$->operator = QOPNE;
-    $$->valfix = $3;
-    $$->value_type = QVALFLO;
-  }
-
-| TWORD TGE TSTR {
-    $$ = mkqnode(QKEY);
-    $$->name = $1;
-    $$->keytype = QKEYNAME;
-    $$->operator = QOPGE;
-    $$->valstr = $3;
-    $$->value_type = QVALSTR;
-  }
-| TWORD TGE TWORD {
-    $$ = mkqnode(QKEY);
-    $$->name = $1;
-    $$->keytype = QKEYNAME;
-    $$->operator = QOPGE;
-    $$->valstr = $3;
-    $$->value_type = QVALSTR;
-  }
-| TWORD TGE fix {
-    $$ = mkqnode(QKEY);
-    $$->name = $1;
-    $$->keytype = QKEYNAME;
-    $$->operator = QOPGE;
-    $$->valfix = $3;
-    $$->value_type = QVALFIX;
-  }
-| TWORD TGE flo {
-    $$ = mkqnode(QKEY);
-    $$->name = $1;
-    $$->keytype = QKEYNAME;
-    $$->operator = QOPGE;
-    $$->valfix = $3;
-    $$->value_type = QVALFLO;
-  }
-
-| TWORD TLE TSTR {
-    $$ = mkqnode(QKEY);
-    $$->name = $1;
-    $$->keytype = QKEYNAME;
-    $$->operator = QOPLE;
-    $$->valstr = $3;
-    $$->value_type = QVALSTR;
-  }
-| TWORD TLE TWORD {
-    $$ = mkqnode(QKEY);
-    $$->name = $1;
-    $$->keytype = QKEYNAME;
-    $$->operator = QOPLE;
-    $$->valstr = $3;
-    $$->value_type = QVALSTR;
-  }
-| TWORD TLE fix {
-    $$ = mkqnode(QKEY);
-    $$->name = $1;
-    $$->keytype = QKEYNAME;
-    $$->operator = QOPLE;
-    $$->valfix = $3;
-    $$->value_type = QVALFIX;
-  }
-| TWORD TLE flo {
-    $$ = mkqnode(QKEY);
-    $$->name = $1;
-    $$->keytype = QKEYNAME;
-    $$->operator = QOPLE;
-    $$->valfix = $3;
-    $$->value_type = QVALFLO;
-  }
-
-| TWORD '<' TSTR {
-    $$ = mkqnode(QKEY);
-    $$->name = $1;
-    $$->keytype = QKEYNAME;
-    $$->operator = QOPLT;
-    $$->valstr = $3;
-    $$->value_type = QVALSTR;
-  }
-| TWORD '<' TWORD {
-    $$ = mkqnode(QKEY);
-    $$->name = $1;
-    $$->keytype = QKEYNAME;
-    $$->operator = QOPLT;
-    $$->valstr = $3;
-    $$->value_type = QVALSTR;
-  }
-| TWORD '<' fix {
-    $$ = mkqnode(QKEY);
-    $$->name = $1;
-    $$->keytype = QKEYNAME;
-    $$->operator = QOPLT;
-    $$->valfix = $3;
-    $$->value_type = QVALFIX;
-  }
-| TWORD '<' flo {
-    $$ = mkqnode(QKEY);
-    $$->name = $1;
-    $$->keytype = QKEYNAME;
-    $$->operator = QOPLT;
-    $$->valfix = $3;
-    $$->value_type = QVALFLO;
-  }
-
-| TWORD '>' TSTR {
-    $$ = mkqnode(QKEY);
-    $$->name = $1;
-    $$->keytype = QKEYNAME;
-    $$->operator = QOPGT;
-    $$->valstr = $3;
-    $$->value_type = QVALSTR;
-  }
-| TWORD '>' TWORD {
-    $$ = mkqnode(QKEY);
-    $$->name = $1;
-    $$->keytype = QKEYNAME;
-    $$->operator = QOPGT;
-    $$->valstr = $3;
-    $$->value_type = QVALSTR;
-  }
-| TWORD '>' fix {
-    $$ = mkqnode(QKEY);
-    $$->name = $1;
-    $$->keytype = QKEYNAME;
-    $$->operator = QOPGT;
-    $$->valfix = $3;
-    $$->value_type = QVALFIX;
-  }
-| TWORD '>' flo {
-    $$ = mkqnode(QKEY);
-    $$->name = $1;
-    $$->keytype = QKEYNAME;
-    $$->operator = QOPGT;
+    $$->operator = $2;
     $$->valfix = $3;
     $$->value_type = QVALFLO;
   }
@@ -289,5 +120,13 @@ fix:
 flo:
   '-' TFLO { $$ = (-1.0) * $2; }
 | TFLO { $$ = $1; }
+
+cmpop:
+  '>' { $$ = QOPGT; }
+| '<' { $$ = QOPLT; }
+| '=' { $$ = QOPEQ; }
+| TLE { $$ = QOPLE; }
+| TGE { $$ = QOPGT; }
+| TNE { $$ = QOPNE; }
 
 %%
